@@ -26,7 +26,7 @@
 
 import { resolveUpstream, type Env } from '../env.js'
 import { classify, type ErrorKind } from '../upstream/client.js'
-import { deriveDeviceId, referenceChatHeaders } from '../upstream/headers.js'
+import { buddyConversationFromHeaders, deriveDeviceId, referenceChatHeaders } from '../upstream/headers.js'
 import { prepareChatBody, sanitizeChatBody } from './payload.js'
 import { ERROR_CHECK_FRAMES, ERROR_HINT_PATTERN, aggregateSse, createFrameTranslator, detectErrorFrame, doneFrame, errorFrame, mayHaveUsage, parseSseLine, sseHeaders, translateFrame } from './stream.js'
 import { jsonError, parseRetryAfterMs } from './http.js'
@@ -382,7 +382,11 @@ export async function handleChatCompletions(
 
   // 会话粘性 key（空串 = 无法判定会话，此时不做粘性）。
   // ⚠️ 在这里算一次、两条路径共用 —— 不各算一份（会分叉）。
-  const sessionKey = await deriveSessionKey(rawBody)
+  const explicitConversation = request.headers.get('X-Conversation-ID')
+  const bodySessionKey = await deriveSessionKey(rawBody)
+  // 保留既有 user / conversation_id 粘性；新生成的响应头不能覆盖客户端已有标识。
+  const sessionKey = bodySessionKey || (explicitConversation
+    ? `c:${(await sha256Hex(explicitConversation)).slice(0, 32)}` : '')
 
   const rawModel =
     typeof (rawBody as Record<string, unknown>).model === 'string'
@@ -584,6 +588,7 @@ export async function handleChatCompletions(
           uid: candidate.uid,
           accessToken: candidate.credential.accessToken,
           variant: DEFAULT_PROVIDER === 'workbuddy' ? 'workbuddy' : 'buddy',
+          conversation: buddyConversationFromHeaders(request.headers),
         }),
         body: prepared,
         signal: request.signal,
@@ -980,6 +985,7 @@ async function handleProviderChat(input: {
       ? { ...(rawBody as Record<string, unknown>), model }
       : (rawBody as Record<string, unknown>)
   const tried = input.tried
+  const conversation = buddyConversationFromHeaders(request.headers)
   let lastError: { status: number; message: string } | undefined
 
   for (let attempt = 0; attempt <= MAX_ROTATE; attempt += 1) {
@@ -1014,7 +1020,7 @@ async function handleProviderChat(input: {
     let refreshFailure = ''
     let upstream: Response
     try {
-      upstream = await provider.chat(credential, { model, body, signal: request.signal })
+      upstream = await provider.chat(credential, { model, body, signal: request.signal, conversation })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
@@ -1032,7 +1038,7 @@ async function handleProviderChat(input: {
           const fresh = await provider.refresh(credential, AbortSignal.timeout(30_000))
           await pool.putCredential(picked.uid, fresh, Date.now())
           console.warn(`[refresh] ${providerId} 续期成功（catch 分支），已回写凭据`)
-          const retry = await provider.chat(fresh, { model, body, signal: request.signal })
+          const retry = await provider.chat(fresh, { model, body, signal: request.signal, conversation })
           if (retry.ok && retry.body !== null) {
             const startedAt2 = Date.now()
             return {
@@ -1105,7 +1111,7 @@ async function handleProviderChat(input: {
           await pool.putCredential(picked.uid, fresh, Date.now())
           // ⚠️ 重放请求（用新凭据）。这里直接用 continue 会重新选号，
           // 但我们要的是**同一个号**换新令牌重试 —— 故显式再发一次。
-          const retry = await provider.chat(fresh, { model, body, signal: request.signal })
+          const retry = await provider.chat(fresh, { model, body, signal: request.signal, conversation })
           if (retry.ok && retry.body !== null) {
             const startedAt2 = Date.now()
             return {

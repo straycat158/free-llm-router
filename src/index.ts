@@ -233,7 +233,7 @@ function withCors(response: Response): Response {
   const headers = new Headers(response.headers)
   headers.set('access-control-allow-origin', '*')
   // ⚠️ `Authorization` 必须在允许列表里：否则浏览器不会把密钥发出去。
-  headers.set('access-control-allow-headers', 'authorization, content-type')
+  headers.set('access-control-allow-headers', 'authorization, content-type, x-conversation-id, x-conversation-request-id, x-router-debug')
   headers.set('access-control-allow-methods', 'GET, POST, OPTIONS')
   // ⚠️ 预检结果缓存 24 小时：否则**每个**请求都多一次 OPTIONS 往返，
   // 对流式对话这种高频场景是纯粹的延迟浪费。

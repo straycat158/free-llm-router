@@ -341,6 +341,30 @@ src/
 `npm run typecheck` 与 `npm run build:check` 通过。另将既有 Cline 源码断言的换行符
 归一化，以兼容 Windows CRLF；未部署或消耗真实上游额度。
 
+**2026-10-28 Responses 工具往返修正**：`function_call.call_id` 与
+`function_call_output.call_id` 原样映射为 Chat 的 `tool_calls[].id` / `tool_call_id`。
+同一轮的 reasoning、assistant 正文与并行调用合并到同一条 assistant 消息；
+每轮调用后必须恰有一个对应工具结果，缺失、重复或乱序跨轮时返回明确的 400，
+不把损坏的历史转发上游。本项目输出的明文 reasoning summary 回放为
+`reasoning_content`，不把其它服务的加密 reasoning 当作明文。
+Responses 内部请求保留取消信号与显式会话标识；仅 buddy/workbuddy 使用会话头作用域。
+客户端提供的 `X-Conversation-ID` 与 `X-Conversation-Request-ID` 在工具循环中透传，
+消息 ID 与根请求 ID 每次出站仍重新生成。没有显式标识时生成新会话作用域，
+通过响应头返回供客户端后续请求回传；无状态网关不从提示词内容猜测会话归属。
+同一工具循环须回传两个会话响应头；开始新的用户轮次可更换请求 ID。
+浏览器 `/v1/*` 的 CORS 允许这两个头和诊断头，并暴露会话响应头。
+这项要求取代上一段「所有会话头每次全新且忽略客户端会话值」在显式作用域中的规则。
+ID 对比诊断由 `X-Router-Debug: tool-pairing` 显式开启，只记录调用 ID，
+不记录参数、提示词或凭据；验证使用模拟请求，不消耗真实额度。
+`sanitizeChatBody` 不得改写工具 ID 或 `reasoning_content`，这些字符串中的数字指纹
+通过 JSON Unicode 转义保留原始值；其它字段继续沿用既有脱敏规则。
+
+本地验证：新增 20 条回归测试，全量 **667/667** 通过；
+`npm run typecheck`、`npm run build:check` 与 `git diff --check` 通过。
+模拟验证覆盖国内版 / 国际版的流式与非流式双轮并行工具、分片参数、
+ID 出站对照、reasoning 原文、取消信号、会话头换号重试与其它供应商隔离。
+尚未部署，也未使用真实账号验证 WorkBuddy 的会话头业务判据。
+
 ### 6.7 错误分类（决定换号还是罚号）
 
 Go 侧有 13 种 `ErrKind`，判定有 12 层优先级（`internal/upstream/client.go:489-596`）。关键语义：

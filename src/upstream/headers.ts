@@ -153,8 +153,23 @@ export const APPEARANCE_THEME_KEY = 'theme-tkmw7j'
 /** 请求头集合（普通对象，便于单测断言与 JSON 序列化）。 */
 export type HeaderMap = Record<string, string>
 
-/** 仅供 buddy/workbuddy：在最终合并后兜底 UA，每个出站请求使用独立会话 ID。 */
-export function withBuddyRequestHeaders(input: HeaderMap): HeaderMap {
+/** buddy/workbuddy 显式会话作用域；省略的字段在出站时重新生成。 */
+export interface BuddyConversation {
+  conversationId?: string
+  requestId?: string
+}
+
+/** 仅识别明确的会话作用域；不转发客户端认证头或其它任意头。 */
+export function buddyConversationFromHeaders(headers: Headers): BuddyConversation | undefined {
+  const conversationId = headers.get('X-Conversation-ID')
+  const requestId = headers.get('X-Conversation-Request-ID')
+  return conversationId || requestId
+    ? { conversationId: conversationId || undefined, requestId: requestId || undefined }
+    : undefined
+}
+
+/** 最终合并后兜底 UA；显式会话值保持稳定，其余 ID 每次出站生成。 */
+export function withBuddyRequestHeaders(input: HeaderMap, conversation?: BuddyConversation): HeaderMap {
   const headers = { ...input }
   const uaKeys = Object.keys(headers).filter((key) => key.toLowerCase() === 'user-agent')
   const ua = uaKeys.map((key) => headers[key] ?? '').find((value) => value.trim() !== '') ?? ''
@@ -170,8 +185,8 @@ export function withBuddyRequestHeaders(input: HeaderMap): HeaderMap {
   return {
     ...headers,
     'User-Agent': ua.trim() === '' || blocked ? 'curl/8.0.1' : ua,
-    'X-Conversation-ID': crypto.randomUUID(),
-    'X-Conversation-Request-ID': crypto.randomUUID(),
+    'X-Conversation-ID': conversation?.conversationId ?? crypto.randomUUID(),
+    'X-Conversation-Request-ID': conversation?.requestId ?? crypto.randomUUID(),
     'X-Conversation-Message-ID': crypto.randomUUID(),
     'X-Root-Request-ID': crypto.randomUUID(),
   }
@@ -239,6 +254,7 @@ export function referenceChatHeaders(input: {
   uid: string
   accessToken: string
   variant?: 'buddy' | 'workbuddy'
+  conversation?: BuddyConversation | undefined
 }): HeaderMap {
   const intl = input.variant === 'workbuddy'
   const headers: HeaderMap = {
@@ -260,7 +276,7 @@ export function referenceChatHeaders(input: {
     'User-Agent': intl ? cliUserAgentIntl() : CODEBUDDY_USER_AGENT,
   }
   if (input.accessToken !== '') headers.Authorization = `Bearer ${input.accessToken}`
-  return withBuddyRequestHeaders(headers)
+  return withBuddyRequestHeaders(headers, input.conversation)
 }
 
 /** chat 出站头：在 common 之上加鉴权与会话头族（`headers.go:198-268`）。 */

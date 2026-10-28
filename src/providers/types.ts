@@ -97,6 +97,8 @@ export interface ChatRequest {
   body: Record<string, unknown>
   /** 客户端断开信号。 */
   signal: AbortSignal
+  /** WorkBuddy 专用会话作用域；其它供应商忽略此字段。 */
+  conversation?: { conversationId?: string; requestId?: string } | undefined
 }
 
 /** 模型目录条目（统一形状）。 */

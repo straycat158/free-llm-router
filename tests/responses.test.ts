@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { toChatBody, toResponsesObject, usageOf, ResponsesError } from '../src/gateway/responses.ts'
+import { toChatBody, toResponsesObject, toResponsesSse, usageOf, ResponsesError } from '../src/gateway/responses.ts'
 
 test('🔴 Responses 的 `tools` 是**扁平**的，必须转成 Chat 的嵌套形状', () => {
   // ⚠️ 这是最容易写错的一处。两边形状不同：
@@ -106,13 +106,14 @@ test('⚠️ `function_call` 缺 call_id 时回落到 `id`', () => {
   // 参考实现（responses.ts:490-492）：`call_id` 才是配对 id，`id`（fc_…）只是
   // item 身份。两者都可能出现，优先 call_id，缺了才退回 id。
   const chat = toChatBody({
-    input: [{ type: 'function_call', id: 'fc_abc', name: 'f', arguments: '{}' }],
+    input: [{ type: 'function_call', id: 'fc_abc', name: 'f', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'fc_abc', output: '完成' }],
   }, 'm')
   const calls = (chat.messages as Array<Record<string, unknown>>)[0]!.tool_calls as Array<Record<string, unknown>>
   assert.equal(calls[0]!.id, 'fc_abc')
 })
 
-test('⚠️ `reasoning` 历史项必须丢弃（无法回放加密思考内容）', () => {
+test('空 reasoning 不生成多余消息，加密内容无法回放时明确报错', () => {
   const chat = toChatBody({
     input: [
       { type: 'reasoning', summary: [] },
@@ -122,6 +123,7 @@ test('⚠️ `reasoning` 历史项必须丢弃（无法回放加密思考内容�
   const msgs = chat.messages as Array<Record<string, unknown>>
   assert.equal(msgs.length, 1)
   assert.equal(msgs[0]!.role, 'user')
+  assert.throws(() => toChatBody({ input: [{ type: 'reasoning', encrypted_content: '密文' }] }, 'm'), /加密 reasoning/)
 })
 
 test('🔴 `previous_response_id` 必须**报错**，不能静默忽略', () => {
@@ -266,4 +268,65 @@ test('⚠️ usage 为 null 时输出 null（不能编造 0 —— 那会被当�
     choices: [{ index: 0, message: { role: 'assistant', content: 'a' }, finish_reason: 'stop' }],
   }, 'r')
   assert.equal(obj.usage, null)
+})
+
+test('并行工具与明文 reasoning 合并到同一 assistant，结果允许按完成顺序回传', (t) => {
+  const ids = ['call_原样保留_11128_0123456789', 'call_另一个_ABCDEFGHIJKLMNOPQRSTUVWXYZ']
+  const input = [
+    { role: 'user', content: '执行两个工具' },
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: '先思考\n' }, { type: 'summary_text', text: '再执行' }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '正在查询' }] },
+    ...ids.map((call_id, i) => ({ type: 'function_call', id: `fc_不同的项ID_${i}`, call_id, name: `f${i}`, arguments: '{}' })),
+    ...[...ids].reverse().map((call_id) => ({ type: 'function_call_output', call_id, output: '完成' })),
+  ]
+  const messages = toChatBody({ input, parallel_tool_calls: false }, 'm').messages as Array<Record<string, any>>
+  assert.deepEqual(messages.map((v) => v.role), ['user', 'assistant', 'tool', 'tool'])
+  assert.equal(messages[1].content, '正在查询')
+  assert.equal(messages[1].reasoning_content, '先思考\n再执行')
+  assert.deepEqual(messages[1].tool_calls.map((v: any) => v.id), ids)
+  assert.deepEqual(messages.slice(2).map((v) => v.tool_call_id), [...ids].reverse())
+  t.diagnostic(JSON.stringify({ 转换前: ids, 转换后: messages[1].tool_calls.map((v: any) => v.id) }))
+})
+
+test('多轮工具历史保持轮次边界，每轮 reasoning 只属于对应 assistant', () => {
+  const input: unknown[] = [{ role: 'user', content: '开始' }]
+  for (let i = 0; i < 2; i++) {
+    input.push(
+      { type: 'reasoning', summary: [{ type: 'summary_text', text: `思考${i}` }] },
+      { type: 'function_call', call_id: `call_${i}`, name: 'f', arguments: '{}' },
+      { type: 'function_call_output', call_id: `call_${i}`, output: '完成' },
+    )
+  }
+  input.push({ role: 'assistant', content: '结束', reasoning_content: '原始推理' })
+  const messages = toChatBody({ input }, 'm').messages as Array<Record<string, any>>
+  assert.deepEqual(messages.map((v) => v.role), ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'])
+  assert.deepEqual(messages.filter((v) => v.role === 'assistant').map((v) => v.reasoning_content), ['思考0', '思考1', '原始推理'])
+})
+
+for (const [label, input] of [
+  ['结果先于调用', [{ type: 'function_call_output', call_id: 'x', output: '' }, { type: 'function_call', call_id: 'x', name: 'f' }]],
+  ['调用缺少结果', [{ type: 'function_call', call_id: 'x', name: 'f' }]],
+  ['结果重复', [{ type: 'function_call', call_id: 'x', name: 'f' }, { type: 'function_call_output', call_id: 'x', output: '' }, { type: 'function_call_output', call_id: 'x', output: '' }]],
+  ['调用重复', [{ type: 'function_call', call_id: 'x', name: 'f' }, { type: 'function_call', call_id: 'x', name: 'f' }]],
+  ['缺失结果后插入用户消息', [{ type: 'function_call', call_id: 'x', name: 'f' }, { role: 'user', content: '继续' }]],
+  ['并行结果未齐就开始新轮', [{ type: 'function_call', call_id: 'a', name: 'f' }, { type: 'function_call', call_id: 'b', name: 'f' }, { type: 'function_call_output', call_id: 'a', output: '' }, { type: 'function_call', call_id: 'c', name: 'f' }]],
+] as const) {
+  test(`损坏的工具历史明确拒绝：${label}`, () => {
+    assert.throws(() => toChatBody({ input }, 'm'), ResponsesError)
+  })
+}
+
+test('Responses SSE 的中文 reasoning 跨 UTF-8 字节分块后仍可原样回放', async () => {
+  const bytes = new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{
+    delta: { reasoning_content: '中文推理\n原样保留' }, finish_reason: 'stop',
+  }] }) + '\n\ndata: [DONE]\n\n')
+  const upstream = new ReadableStream<Uint8Array>({ start(controller) {
+    for (const byte of bytes) controller.enqueue(new Uint8Array([byte]))
+    controller.close()
+  } })
+  const text = await new Response(toResponsesSse(upstream, {}, 'm', 'resp_test')).text()
+  const events = text.split('\n').filter((v) => v.startsWith('data: {')).map((v) => JSON.parse(v.slice(6)))
+  const output = events.find((v) => v.type === 'response.completed').response.output
+  const messages = toChatBody({ input: [...output, { role: 'user', content: '继续' }] }, 'm').messages as Array<Record<string, any>>
+  assert.equal(messages[0].reasoning_content, '中文推理\n原样保留')
 })

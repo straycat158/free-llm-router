@@ -298,11 +298,12 @@ export function buildBuddyProvider(config: VariantConfig, env?: Env): Provider {
 
     return await fetch(`${bases.chat}/v2/chat/completions`, {
       method: 'POST',
-      // 产品归属头按变体切换，四个会话 UUID 在每次出站（含重试）时生成。
+      // 显式会话作用域跨工具轮次保留；消息与根请求 ID 每次出站重新生成。
       headers: referenceChatHeaders({
         uid: credential.uid,
         accessToken: credential.accessToken,
         variant: config.id,
+        conversation: request.conversation,
       }),
       body,
       signal: request.signal,

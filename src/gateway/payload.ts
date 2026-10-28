@@ -275,5 +275,9 @@ export function prepareChatBody(input: unknown): PrepareResult {
  */
 export function sanitizeChatBody(body: string): string {
   if (!body.includes('11128')) return body
-  return body.replaceAll('11128', '11-128')
+  // 标识符与原始推理是协议状态，不能用连字符改变值；在 JSON 字面量中转义数字。
+  return body.replace(
+    /("(?:id|tool_call_id|reasoning_content)"\s*:\s*)("(?:[^"\\]|\\.)*")/g,
+    (_match, key: string, value: string) => key + value.replaceAll('11128', '11\\u003128'),
+  ).replaceAll('11128', '11-128')
 }

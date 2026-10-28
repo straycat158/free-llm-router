@@ -49,7 +49,7 @@
  */
 
 import {
-  aggregateSse, createFrameTranslator, detectErrorFrame, parseSseLine,
+  aggregateSse, detectErrorFrame, parseSseLine,
   type AggregatedCompletion,
 } from './stream.js'
 import { handleChatCompletions } from './server.js'
@@ -76,6 +76,8 @@ export interface ResponsesRequest {
   previous_response_id?: unknown
   store?: unknown
   truncation?: unknown
+  conversation_id?: unknown
+  conversationId?: unknown
 }
 
 /** 请求转换失败（会被上层转成一个 400）。 */
@@ -233,6 +235,24 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
   if (typeof input === 'string') {
     if (input !== '') messages.push({ role: 'user', content: input })
   } else if (Array.isArray(input)) {
+    // Responses 将一轮 assistant 拆成多个输出项；Chat 要求整轮工具共用一条消息。
+    let assistant: Record<string, unknown> | undefined
+    const pending = new Set<string>()
+    const declared = new Set<string>()
+    const completed = new Set<string>()
+    const assertComplete = () => {
+      if (pending.size > 0) {
+        throw new ResponsesError(`工具调用缺少结果：${JSON.stringify([...pending])}`)
+      }
+    }
+    const assistantTurn = (): Record<string, unknown> => {
+      if (assistant === undefined) {
+        assertComplete()
+        assistant = { role: 'assistant', content: '' }
+        messages.push(assistant)
+      }
+      return assistant
+    }
     for (const raw of input) {
       if (!isObject(raw)) throw new ResponsesError('input entries must be objects')
       const type = raw.type
@@ -241,14 +261,22 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
         const role = raw.role
         const content = chatPartsFromResponses(raw.content)
         if (role === 'user') {
+          assertComplete()
+          assistant = undefined
           messages.push({ role: 'user', content })
           continue
         }
         if (role === 'assistant') {
-          messages.push({ role: 'assistant', content: textFromContent(content) })
+          const turn = assistantTurn()
+          turn.content = String(turn.content) + textFromContent(content)
+          if (typeof raw.reasoning_content === 'string') {
+            turn.reasoning_content = String(turn.reasoning_content ?? '') + raw.reasoning_content
+          }
           continue
         }
         if (role === 'system' || role === 'developer') {
+          assertComplete()
+          assistant = undefined
           // ⚠️ `developer` 也收下并转成 `system`：我们内部会把它规整成 system
           //（见 payload.ts），但**这里先转**能保住顺序 ——
           // 否则它会被 payload 的清理逻辑移到别处，system 提示词的位置就变了。
@@ -266,16 +294,24 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
         if (callId === undefined || name === undefined) {
           throw new ResponsesError('function_call requires call_id and name')
         }
-        messages.push({
-          role: 'assistant',
-          content: '',
-          tool_calls: [{ id: callId, type: 'function', function: { name, arguments: args } }],
-        })
+        if (declared.has(callId)) throw new ResponsesError(`工具调用 ID 重复：${JSON.stringify(callId)}`)
+        const turn = assistantTurn()
+        const calls = (turn.tool_calls ??= []) as unknown[]
+        calls.push({ id: callId, type: 'function', function: { name, arguments: args } })
+        declared.add(callId)
+        pending.add(callId)
         continue
       }
       if (type === 'function_call_output') {
         const callId = nonEmptyString(raw.call_id)
         if (callId === undefined) throw new ResponsesError('function_call_output requires call_id')
+        if (!pending.delete(callId)) {
+          throw new ResponsesError(completed.has(callId)
+            ? `工具结果重复：${JSON.stringify(callId)}`
+            : `工具结果没有前序调用：${JSON.stringify(callId)}`)
+        }
+        completed.add(callId)
+        assistant = undefined
         // `output` 可能是字符串，也可能是 content 块数组 —— 两种都要认。
         const out = raw.output
         const text = typeof out === 'string' ? out : textFromContent(out)
@@ -283,9 +319,17 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
         continue
       }
       if (type === 'reasoning') {
-        // 历史里的推理项**刻意丢弃**：它承载的是上游加密的思考内容，
-        // 网关既没有解密通道也没有可回放的等价物（与 Chat 路径一致 ——
-        // 那里的 `reasoning_content` 同样不回传上游）。
+        // 本网关输出的 summary 是原始明文 reasoning_content，续轮必须原样回放。
+        // 加密内容不能冒充明文；没有可用文本时明确拒绝，避免静默丢上下文。
+        const text = typeof raw.reasoning_content === 'string'
+          ? raw.reasoning_content
+          : textFromContent(raw.summary) || textFromContent(raw.content)
+        if (text !== '') {
+          const turn = assistantTurn()
+          turn.reasoning_content = String(turn.reasoning_content ?? '') + text
+        } else if (nonEmptyString(raw.encrypted_content) !== undefined) {
+          throw new ResponsesError('此 Chat 上游无法回放加密 reasoning，请提供原始明文推理历史')
+        }
         continue
       }
       if (type === 'item_reference') {
@@ -295,6 +339,7 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
       }
       throw new ResponsesError(`input item type ${String(type)} is not supported`)
     }
+    assertComplete()
   } else if (input !== undefined && input !== null) {
     throw new ResponsesError('input must be a string or an array of items')
   }
@@ -316,6 +361,9 @@ export function toChatBody(body: ResponsesRequest, model: string): Record<string
   if (typeof body.temperature === 'number') chat.temperature = body.temperature
   if (typeof body.top_p === 'number') chat.top_p = body.top_p
   if (typeof body.user === 'string' && body.user !== '') chat.user = body.user
+  const conversationId = nonEmptyString(body.conversation_id) ?? nonEmptyString(body.conversationId)
+  if (conversationId !== undefined) chat.conversation_id = conversationId
+  if (typeof body.parallel_tool_calls === 'boolean') chat.parallel_tool_calls = body.parallel_tool_calls
 
   /**
    * ⚠️ `reasoning.effort` → `reasoning_effort`。
@@ -527,7 +575,7 @@ export function toResponsesSse(
   model: string,
   responseId: string,
 ): ReadableStream<Uint8Array> {
-  const translator = createFrameTranslator()
+  const decoder = new TextDecoder()
   let sequence = 0
 
   // ⚠️ 有状态：跨 chunk 保留未完成的帧与已开启的输出项。
@@ -767,7 +815,7 @@ export function toResponsesSse(
         controller.enqueue(encoder.encode(emit('response.in_progress', { response: snapshot('in_progress') })))
       },
       transform(chunk, controller) {
-        buffer += new TextDecoder().decode(chunk, { stream: true })
+        buffer += decoder.decode(chunk, { stream: true })
         let nl = buffer.indexOf('\n')
         while (nl >= 0) {
           const line = buffer.slice(0, nl)
@@ -869,6 +917,18 @@ export async function handleResponses(
     return { response: errorJson(error instanceof Error ? error.message : String(error)) }
   }
 
+  if (request.headers.get('X-Router-Debug') === 'tool-pairing') {
+    const input = Array.isArray(body.input) ? body.input.filter(isObject) : []
+    const messages = chatBody.messages as Array<Record<string, unknown>>
+    console.debug('[responses 工具 ID 对照]', JSON.stringify({
+      inputCalls: input.filter((v) => v.type === 'function_call').map((v) => v.call_id ?? v.id),
+      chatCalls: messages.flatMap((v) => Array.isArray(v.tool_calls)
+        ? v.tool_calls.map((c: Record<string, unknown>) => c.id) : []),
+      inputResults: input.filter((v) => v.type === 'function_call_output').map((v) => v.call_id),
+      chatResults: messages.filter((v) => v.role === 'tool').map((v) => v.tool_call_id),
+    }))
+  }
+
   // ⚠️ **强制流式**去问上游：本网关的上游只支持流式（Chat 路径也是这么做的）。
   // 客户端要不要流式由 `body.stream` 决定，与「我们怎么问上游」无关。
   chatBody.stream = true
@@ -876,12 +936,23 @@ export async function handleResponses(
   const wantsStream = body.stream === true
   const responseId = hexId('resp')
 
+  // 网关无状态：显式标识原样沿用；新会话通过响应头返回，客户端续轮时回传。
+  const conversationHeaders = new Headers({
+    'X-Conversation-ID': request.headers.get('X-Conversation-ID')
+      || nonEmptyString(body.conversation_id) || nonEmptyString(body.conversationId) || crypto.randomUUID(),
+    'X-Conversation-Request-ID': request.headers.get('X-Conversation-Request-ID') || crypto.randomUUID(),
+  })
+  const chatHeaders = new Headers(conversationHeaders)
+  chatHeaders.set('content-type', 'application/json')
+  conversationHeaders.set('access-control-expose-headers', 'X-Conversation-ID, X-Conversation-Request-ID')
+
   // ⚠️ 复用 Chat 处理器 = 复用**全部**既有能力（选号/轮转/冷却/续期/渠道指纹）。
   // 见本文件头「实现策略」的说明。
   const chatRequest = new Request(new URL('/v1/chat/completions', request.url), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: chatHeaders,
     body: JSON.stringify(chatBody),
+    signal: request.signal,
   })
   const inner = await handleChatCompletions(chatRequest, env, realm, ctx, subkey)
 
@@ -905,6 +976,7 @@ export async function handleResponses(
       response: new Response(toResponsesSse(inner.response.body, body, model, responseId), {
         status: 200,
         headers: {
+          ...Object.fromEntries(conversationHeaders),
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-store',
           connection: 'keep-alive',
@@ -935,7 +1007,7 @@ export async function handleResponses(
   const aggregated = aggregateSse(raw, { model, now: Date.now() })
   return {
     response: Response.json(toResponsesObject(body, model, aggregated, responseId), {
-      headers: { 'cache-control': 'no-store' },
+      headers: { ...Object.fromEntries(conversationHeaders), 'cache-control': 'no-store' },
     }),
   }
 }
