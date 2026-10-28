@@ -326,6 +326,21 @@ src/
 
 请求体只要出现裸数字 `11128` 就会被拦截，**包含在请求里本身就是拦截条件** ⇒ 必须整段改写（`internal/upstream/sanitize.go:70-76`）。
 
+**2026-10-28 出站修补（按用户提供的社区验证结论）**：仅针对 `buddy` / `workbuddy`，
+每次构造出站头时生成四个互不相同的新 UUID：`X-Conversation-ID`、
+`X-Conversation-Request-ID`、`X-Conversation-Message-ID`、`X-Root-Request-ID`。
+包括重试在内，不缓存这些 ID，也不复用客户端传入的会话值；账号池会话粘性仍由客户端显式标识控制。
+现有国内版 / 国际版 UA 可继续使用，但空白或命中 `/deepseek[-_ ]?harness/i` 时回落到 `curl/8.0.1`。
+请求体在角色转换后，仅对 `system` 的字符串与文本块，将 `/DeepSeek\s*Harness/gi`
+替换成 `DeepSeek\u200BHarness`（U+200B），不修改 user / assistant / tool 内容或其它字段。
+该处理复用 WorkBuddy 专用的 `prepareChatBody`，覆盖默认 buddy、provider 与 Responses 路径。
+这项要求取代 §9.14 历史记录里「不发会话头」的结论；社区结果尚未在本地用真实账号复测。
+
+本地验证：新增 15 条回归测试，模拟捕获 buddy/workbuddy 的 Chat 与 Responses
+流式 / 非流式出站请求、换号重试及其它供应商隔离；全量 **647/647** 通过，
+`npm run typecheck` 与 `npm run build:check` 通过。另将既有 Cline 源码断言的换行符
+归一化，以兼容 Windows CRLF；未部署或消耗真实上游额度。
+
 ### 6.7 错误分类（决定换号还是罚号）
 
 Go 侧有 13 种 `ErrKind`，判定有 12 层优先级（`internal/upstream/client.go:489-596`）。关键语义：

@@ -1303,11 +1303,11 @@ test('🔴 国内版与国际版的 chat 头必须是**两套不同取值**（�
   assert.equal(dom['X-Product-Code'], 'codebuddy')
   assert.equal(intl['X-Product-Code'], 'workbuddy')
 
-  // ⚠️ 参考实现只发这 11 个（多发的头是 Go 侧口径，国际版端点不认）
+  // 产品归属头保持原值，同时必须发送动态会话头。
   assert.equal(dom['Accept'], 'text/event-stream', 'Accept 必须精确（不能带 json 偏好）')
   assert.ok(!('Origin' in dom), '⚠️ 不得发 Origin（Go 侧口径，参考实现不发）')
   assert.ok(!('X-Machine-ID' in dom), '⚠️ 不得发 X-Machine-ID')
-  assert.ok(!('X-Conversation-Request-ID' in dom), '⚠️ 不得发 X-Conversation-Request-ID')
+  assert.ok(dom['X-Conversation-Request-ID'], '必须发送动态 X-Conversation-Request-ID')
   assert.equal(dom['Authorization'], 'Bearer tok', '只保留 Authorization')
 })
 

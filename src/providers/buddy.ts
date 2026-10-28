@@ -298,14 +298,7 @@ export function buildBuddyProvider(config: VariantConfig, env?: Env): Provider {
 
     return await fetch(`${bases.chat}/v2/chat/completions`, {
       method: 'POST',
-      // ⚠️ **chat 用参考实现口径的头**（11 个），不是 Go 侧那套。
-      //
-      // 实测对比：用户「在 DSH 用参考插件几乎没失败过」，而我们一直回 11128。
-      // 逐行对比后确认两套头差异很大（见 `referenceChatHeaders` 的对照表）——
-      // 我们多发了一批 Go 侧口径的头（Origin/Referer/X-Machine-ID/
-      // X-Conversation-Request-ID…），**在国际版端点上不被认可**。
-      //
-      // 唯一保留的额外头是 `Authorization`（参考实现也发）。
+      // 产品归属头按变体切换，四个会话 UUID 在每次出站（含重试）时生成。
       headers: referenceChatHeaders({
         uid: credential.uid,
         accessToken: credential.accessToken,

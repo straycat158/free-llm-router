@@ -190,6 +190,28 @@ export interface PrepareResult {
   applied: string[]
 }
 
+/** WorkBuddy 内容指纹处理：只复制并修改 system 文本，不触碰其它角色或入站对象。 */
+export function sanitizeSystemMessages(messages: unknown[]): unknown[] {
+  const sanitize = (text: string): string => text.replace(/DeepSeek\s*Harness/gi, 'DeepSeek\u200BHarness')
+  return messages.map((raw) => {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const msg = raw as Record<string, unknown>
+    if (msg.role !== 'system') return raw
+    if (typeof msg.content === 'string') return { ...msg, content: sanitize(msg.content) }
+    if (!Array.isArray(msg.content)) return raw
+    return {
+      ...msg,
+      content: msg.content.map((part: unknown) => {
+        if (part === null || typeof part !== 'object' || Array.isArray(part)) return part
+        const block = part as Record<string, unknown>
+        return block.type === 'text' && typeof block.text === 'string'
+          ? { ...block, text: sanitize(block.text) }
+          : part
+      }),
+    }
+  })
+}
+
 /**
  * 完整准备管线。
  *
@@ -238,6 +260,9 @@ export function prepareChatBody(input: unknown): PrepareResult {
   } else {
     throw new Error('messages 必须是数组')
   }
+
+  // developer 已在上一阶段转换为 system；该管线仅用于 buddy/workbuddy。
+  body.messages = sanitizeSystemMessages(body.messages as unknown[])
 
   return { body: JSON.stringify(body), applied }
 }

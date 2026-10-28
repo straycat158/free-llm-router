@@ -153,6 +153,30 @@ export const APPEARANCE_THEME_KEY = 'theme-tkmw7j'
 /** 请求头集合（普通对象，便于单测断言与 JSON 序列化）。 */
 export type HeaderMap = Record<string, string>
 
+/** 仅供 buddy/workbuddy：在最终合并后兜底 UA，每个出站请求使用独立会话 ID。 */
+export function withBuddyRequestHeaders(input: HeaderMap): HeaderMap {
+  const headers = { ...input }
+  const uaKeys = Object.keys(headers).filter((key) => key.toLowerCase() === 'user-agent')
+  const ua = uaKeys.map((key) => headers[key] ?? '').find((value) => value.trim() !== '') ?? ''
+  const blocked = uaKeys.some((key) => /deepseek[-_ ]?harness/i.test(headers[key] ?? ''))
+  // 删除所有大小写变体，避免 fetch 合并出重复的 UA。
+  for (const key of uaKeys) delete headers[key]
+  for (const key of Object.keys(headers)) {
+    if (/^x-(?:conversation-(?:id|request-id|message-id)|root-request-id)$/i.test(key)) {
+      delete headers[key]
+    }
+  }
+
+  return {
+    ...headers,
+    'User-Agent': ua.trim() === '' || blocked ? 'curl/8.0.1' : ua,
+    'X-Conversation-ID': crypto.randomUUID(),
+    'X-Conversation-Request-ID': crypto.randomUUID(),
+    'X-Conversation-Message-ID': crypto.randomUUID(),
+    'X-Root-Request-ID': crypto.randomUUID(),
+  }
+}
+
 /**
  * CN CLI 通用头（`internal/upstream/headers.go:147-172` 的 `CommonHeaders`）。
  *
@@ -207,30 +231,9 @@ export function cliCommonHeaders(input: {
 }
 
 /**
- * **参考实现口径**的 chat 出站头（`deepseek-harness-codearts`）。
- *
- * ## ⚠️ 为什么需要它与 `cliChatHeaders` 并存（实测对比的结论）
- *
- * 用户报「在 DSH 用参考插件几乎没失败过，而你这里问题一堆」。
- * 逐行对比后发现**两套头的差异很大**：
- *
- * | 头 | 参考实现（不失败） | 我们原先（11128） |
- * |---|---|---|
- * | `Accept` | **`text/event-stream`** | `application/json, text/event-stream` |
- * | `X-Domain` | ✅ `www.workbuddy.ai` | ❌ 缺失 |
- * | `X-Product-Code` | ✅ `workbuddy` | ❌ 缺失 |
- * | `Origin`/`Referer` | ❌ **不发** | ✅ 发（国内域名） |
- * | `X-Requested-With` / `X-CodeBuddy-Request` | ❌ 不发 | ✅ 发 |
- * | `X-Machine-ID` / `X-Session-ID` | ❌ 不发 | ✅ 发 |
- * | `X-Conversation-Request-ID` 等 4 个 | ❌ 不发 | ✅ 发 |
- *
- * 参考实现只发 **11 个**头（`buddy-adapter.ts:1950-1982`）。
- * 我们那批多余的头来自 **Go 侧的实现**（`internal/upstream/headers.go`），
- * 而那套口径在国际版端点上**不被认可** ⇒ `11128 unapproved channel`。
- *
- * ⇒ 这里按**参考实现逐字对齐**：只发它发的那些。
- *
- * @param input 与 `cliChatHeaders` 相同的输入（保留形参以便将来切换）
+ * 参考实现的产品归属头 + 动态会话头。
+ * 2026-10-28 按用户提供的社区结论补全四个独立 ID；旧版「不发会话头」的判断已过时。
+ * 默认 buddy 与 provider 两条聊天路径共用此处，重试时也必须重新调用。
  */
 export function referenceChatHeaders(input: {
   uid: string
@@ -257,7 +260,7 @@ export function referenceChatHeaders(input: {
     'User-Agent': intl ? cliUserAgentIntl() : CODEBUDDY_USER_AGENT,
   }
   if (input.accessToken !== '') headers.Authorization = `Bearer ${input.accessToken}`
-  return headers
+  return withBuddyRequestHeaders(headers)
 }
 
 /** chat 出站头：在 common 之上加鉴权与会话头族（`headers.go:198-268`）。 */
@@ -266,9 +269,9 @@ export function cliChatHeaders(input: {
   machineId: string
   sessionId: string
   accessToken: string
-  /** `X-Conversation-Request-ID`：轮级聚合主键，**必发**。 */
+  /** 兼容旧调用方；出站值由本函数实时生成。 */
   conversationRequestId: string
-  /** `X-Conversation-ID`：入站透传值，空则不发（不伪造）。 */
+  /** 兼容旧调用方；不复用入站会话值作为出站 ID。 */
   conversationId?: string
   /** 变体（见 `cliCommonHeaders` 的说明）。默认国内版。 */
   variant?: 'buddy' | 'workbuddy'
@@ -292,10 +295,6 @@ export function cliChatHeaders(input: {
     // ⚠️ `X-Product` 发的是**产品归属名**，不是部署类型 `SaaS`。
     // Go 侧 `product.ts:113-118` 记录过：早年误发 `SaaS` 导致后台归因不到产品。
     'X-Product': 'WorkBuddy',
-    // 轮级聚合主键 + 消息级 id
-    'X-Conversation-Request-ID': input.conversationRequestId,
-    'X-Conversation-Message-ID': randomHex32(),
-    'X-Root-Request-ID': input.conversationRequestId,
     'X-Trace-ID': input.conversationRequestId,
   }
 
@@ -308,12 +307,7 @@ export function cliChatHeaders(input: {
     headers['X-No-User-Id'] = '1'
   }
 
-  // ⚠️ 只有非空才发：空串会让上游误判为「显式要求空会话」
-  if (input.conversationId !== undefined && input.conversationId !== '') {
-    headers['X-Conversation-ID'] = input.conversationId
-  }
-
-  return headers
+  return withBuddyRequestHeaders(headers)
 }
 
 /**

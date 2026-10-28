@@ -458,7 +458,7 @@ test('⚠️ cline 的设备码会话落在 cn 分片（与凭据的 realm 一�
   // 会话分片与账号分片不一致 ⇒ 轮询找不到会话（「会话不存在或已过期」）。
   const src = readFileSync('src/index.ts', 'utf8')
   assert.ok(/providerId === 'cline'/.test(src), '应有一条 cline 发起分支')
-  assert.ok(src.includes("provider: 'cline',\n            kind: 'cline',\n            realm: loginRealm"),
+  assert.ok(src.replace(/\r\n/g, '\n').includes("provider: 'cline',\n            kind: 'cline',\n            realm: loginRealm"),
     'cline 会话必须记录 realm（与 loginRealm 一致）')
 })
 
