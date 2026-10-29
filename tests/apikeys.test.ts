@@ -22,6 +22,8 @@ import {
   defaultApiKeyLimits,
   emptyApiKeyUsage,
   generateApiKey,
+  encryptApiKey,
+  revealApiKey,
   hashApiKey,
   ipAllowed,
   ipMatchesRule,
@@ -35,6 +37,7 @@ import {
   resetUsageWindow,
   toApiKeyView,
 } from '../src/store/apikeys.ts'
+import { encryptCredential } from '../src/store/crypto.ts'
 
 // ─────────────────────── 密钥生成 ───────────────────────
 
@@ -342,4 +345,43 @@ test('🔴 toApiKeyView 绝不得带出 hash（否则列表接口会泄漏）', 
   assert.equal(v.id, r.id)
   assert.equal(v.prefix, r.prefix)
   assert.ok('usage' in v && 'limits' in v)
+})
+
+test('API Key 密文可再次解密，列表只提供查看能力标记', async () => {
+  const key = generateApiKey()
+  const encryptedKey = await encryptApiKey('测试加密密钥', key)
+  const record = rec({ encryptedKey, hash: await hashApiKey(key) })
+  assert.ok(!encryptedKey.includes(key), '持久化材料不得包含明文')
+  assert.equal(await revealApiKey('测试加密密钥', record), key)
+  const view = toApiKeyView(record, emptyApiKeyUsage())
+  assert.equal(view.canReveal, true)
+  assert.ok(!('encryptedKey' in view))
+  assert.ok(!JSON.stringify(view).includes(encryptedKey))
+  assert.ok(!JSON.stringify(view).includes(key))
+  assert.equal(normalizeApiKeyRecord(record)?.encryptedKey, encryptedKey)
+})
+
+test('历史哈希密钥保持有效且明确标记无法恢复', async () => {
+  const record = rec()
+  assert.equal(await revealApiKey(undefined, record), undefined)
+  assert.equal(toApiKeyView(record, emptyApiKeyUsage()).canReveal, false)
+  assert.equal(checkQuota(record, emptyApiKeyUsage(), '', '', Date.now()).ok, true)
+})
+
+test('API Key 加密每次使用独立 IV，未配置 secret 时不降级保存', async () => {
+  const key = generateApiKey()
+  assert.notEqual(await encryptApiKey('测试密钥', key), await encryptApiKey('测试密钥', key))
+  await assert.rejects(encryptApiKey(undefined, key), /CREDENTIAL_KEY/)
+  await assert.rejects(encryptApiKey('  ', key), /CREDENTIAL_KEY/)
+})
+
+test('错误加密密钥、损坏密文、重置前材料与其它用途密文均拒绝回显', async () => {
+  const key = generateApiKey()
+  const encryptedKey = await encryptApiKey('正确密钥', key)
+  const record = rec({ hash: await hashApiKey(key), encryptedKey })
+  await assert.rejects(revealApiKey('错误密钥', record))
+  await assert.rejects(revealApiKey('正确密钥', { ...record, encryptedKey: '损坏密文' }))
+  await assert.rejects(revealApiKey('正确密钥', { ...record, hash: await hashApiKey(generateApiKey()) }), /不匹配/)
+  const other = await encryptCredential('正确密钥', { purpose: 'credential', key })
+  await assert.rejects(revealApiKey('正确密钥', { ...record, encryptedKey: other }), /不匹配/)
 })

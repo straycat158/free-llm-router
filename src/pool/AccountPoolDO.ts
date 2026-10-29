@@ -1183,7 +1183,7 @@ export class AccountPoolDO extends DurableObject<Env> {
   // ─────────────────────── 自定义 API Key ───────────────────────
 
   /**
-   * 列出全部子密钥记录（**不含明文**，只有哈希）。
+   * 列出全部子密钥记录（不含明文，含鉴权哈希与可选加密密文）。
    *
    * ⚠️ 与「供应商设置」一样存在 `cn` 分片的 DO 里当**全局**设置用 ——
    * 子密钥描述的是「谁能调 `/v1/*`」，与 realm 无关；按 realm 各存一份
@@ -1212,7 +1212,7 @@ export class AccountPoolDO extends DurableObject<Env> {
    * ⚠️ **必须做哈希唯一性检查**：哈希碰撞意味着两把不同的 Key 会互相鉴权通过。
    * 概率极低，但一旦发生就是「钥能当另钥用」—— 而这里的代价只是多查一次。
    */
-  async addApiKey(input: { name: string; hash: string; prefix: string }): Promise<ApiKeyRecord> {
+  async addApiKey(input: { name: string; hash: string; prefix: string; encryptedKey?: string }): Promise<ApiKeyRecord> {
     const records = await this.listApiKeys()
     if (records.some((r) => r.hash === input.hash)) {
       throw new Error('哈希冲突：请重试（极小概率事件）')
@@ -1221,6 +1221,7 @@ export class AccountPoolDO extends DurableObject<Env> {
       id: newApiKeyId(),
       name: input.name,
       hash: input.hash,
+      ...(input.encryptedKey === undefined ? {} : { encryptedKey: input.encryptedKey }),
       prefix: input.prefix,
       createdAt: Date.now(),
       lastUsedAt: 0,
@@ -1243,6 +1244,7 @@ export class AccountPoolDO extends DurableObject<Env> {
     limits?: ApiKeyLimits
     hash?: string
     prefix?: string
+    encryptedKey?: string
   }): Promise<ApiKeyRecord | undefined> {
     const records = await this.listApiKeys()
     const idx = records.findIndex((r) => r.id === id)
@@ -1255,6 +1257,9 @@ export class AccountPoolDO extends DurableObject<Env> {
       ...(patch.limits === undefined ? {} : { limits: normalizeApiKeyLimits(patch.limits) }),
       ...(patch.hash === undefined ? {} : { hash: patch.hash }),
       ...(patch.prefix === undefined ? {} : { prefix: patch.prefix }),
+      // 换哈希时同步替换材料；旧调用方没提供新密文时，不能继续保留旧密文。
+      ...((patch.hash !== undefined || patch.encryptedKey !== undefined)
+        ? { encryptedKey: patch.encryptedKey } : {}),
     }
     records[idx] = next
     await this.saveApiKeys(records)
@@ -1384,7 +1389,7 @@ export class AccountPoolDO extends DurableObject<Env> {
    *
    * ## ⚠️ 为什么用哈希而不是明文比较
    *
-   * 库里根本没有明文（只存哈希），所以「比较」天然就是查表。
+   * 鉴权仅比较哈希；可选密文独立用于管理员再次查看，不参与鉴权。
    * 这样**不需要**再写恒定时间比较 —— 哈希是单向的，攻击者从哈希反推
    * 不出明文；而查表的命中/不命中耗时差异不构成时序侧信道
    *（它不能揭示**明文**，只能揭示「这个哈希在不在表里」，而哈希由攻击者自己提供）。

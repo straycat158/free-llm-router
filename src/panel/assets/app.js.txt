@@ -34,7 +34,7 @@ async function api(path, options) {
   const text = await res.text()
   let body
   try { body = JSON.parse(text) } catch { body = text }
-  if (res.status === 401) setAuth('密钥无效或未设置', false)
+  if (res.status === 401) { hideRevealedKey(); setAuth('密钥无效或未设置', false) }
   return { status: res.status, ok: res.ok, body: body }
 }
 
@@ -200,6 +200,7 @@ const VIEW_LOADERS = {
  * 而空白页面极难归因（用户只会说「坏了」）。宁可显示一个默认视图。
  */
 function switchView(name) {
+  hideRevealedKey()
   if (!Object.prototype.hasOwnProperty.call(VIEW_LOADERS, name)) {
     name = 'providers'
   }
@@ -2412,6 +2413,56 @@ document.addEventListener('keydown', (e) => {
 
 /** 缓存最近一次拉到的列表（编辑弹窗需要拿原始限制值回填）。 */
 let apiKeyCache = []
+let keyRevealTimer = null
+let keyRevealEpoch = 0
+
+/** 隐藏时真正清空明文，同时使正在等待的查看请求失效。 */
+function hideRevealedKey() {
+  keyRevealEpoch += 1
+  clearTimeout(keyRevealTimer)
+  keyRevealTimer = null
+  $('apikey-reveal-value').textContent = ''
+  $('apikey-reveal-note').textContent = ''
+  $('apikey-reveal').hidden = true
+}
+
+function keyState(k) {
+  if (!k.enabled) return 'disabled'
+  return k.limits.expiresAt > 0 && Date.now() >= k.limits.expiresAt ? 'expired' : 'active'
+}
+
+/** 搜索和筛选只使用脱敏列表，不缓存完整密钥。 */
+function renderApiKeys() {
+  const box = $('apikeys')
+  clear(box)
+  const query = ($('apikey-search').value || '').trim().toLowerCase()
+  const filter = $('apikey-filter').value || 'all'
+  const keys = apiKeyCache.filter((k) => (!query || (k.name + ' ' + k.prefix).toLowerCase().includes(query))
+    && (filter === 'all' || keyState(k) === filter))
+  $('apikey-result-count').textContent = `显示 ${keys.length} / ${apiKeyCache.length} 把密钥`
+  const stats = $('apikey-stats')
+  clear(stats)
+  for (const [label, value, note] of [
+    ['密钥总数', apiKeyCache.length, '独立管理每个应用的访问权限'],
+    ['启用中', apiKeyCache.filter((k) => keyState(k) === 'active').length, '不含停用及已过期的密钥'],
+    ['可再次查看', apiKeyCache.filter((k) => k.canReveal).length, '加密保存，按需显示完整密钥'],
+  ]) {
+    const stat = document.createElement('div'); stat.className = 'key-stat'
+    const title = document.createElement('span'); title.textContent = label
+    const count = document.createElement('strong'); count.textContent = String(value)
+    const hint = document.createElement('small'); hint.textContent = note
+    stat.appendChild(title); stat.appendChild(count); stat.appendChild(hint); stats.appendChild(stat)
+  }
+  if (keys.length === 0) {
+    const empty = document.createElement('div'); empty.className = 'key-empty'
+    const title = document.createElement('strong')
+    title.textContent = apiKeyCache.length === 0 ? '创建你的第一把 API Key' : '没有匹配的密钥'
+    const hint = document.createElement('p')
+    hint.textContent = apiKeyCache.length === 0 ? '为不同应用分配独立密钥，单独设置配额和访问范围。' : '试试其它名称、密钥前缀，或切换状态筛选。'
+    empty.appendChild(title); empty.appendChild(hint); box.appendChild(empty)
+  }
+  for (const k of keys) box.appendChild(buildKeyCard(k))
+}
 
 /** 把毫秒时间戳说成人话（相对现在）。 */
 function humanAgo(at) {
@@ -2471,22 +2522,20 @@ function kvRow(label, value) {
 async function loadApiKeys() {
   const box = $('apikeys')
   if (!box) return
+  hideRevealedKey()
   clear(box)
   const res = await api('/admin/apikeys')
   if (!res.ok) {
-    const p = document.createElement('p'); p.className = 'hint'; p.textContent = '加载失败'
+    const p = document.createElement('p'); p.className = 'hint'; p.textContent = '加载失败，请点击刷新重试'
     box.appendChild(p)
+    clear($('apikey-stats'))
+    $('apikey-result-count').textContent = '加载失败'
+    apiKeyCache = []
     return
   }
   const keys = (res.body && res.body.keys) || []
   apiKeyCache = keys
-  if (keys.length === 0) {
-    const p = document.createElement('p'); p.className = 'hint'
-    p.textContent = '还没有自定义 API Key。点右上角「新建 API Key」创建一把。'
-    box.appendChild(p)
-    return
-  }
-  for (const k of keys) box.appendChild(buildKeyCard(k))
+  renderApiKeys()
 }
 
 /** 建一张密钥卡片。 */
@@ -2516,8 +2565,14 @@ function buildKeyCard(k) {
   const prefix = document.createElement('code')
   prefix.className = 'key-prefix'
   prefix.textContent = k.prefix + '…'
-  prefix.title = '这是密钥的开头几位，用于辨认；完整密钥只在创建时显示过一次'
-  card.appendChild(prefix)
+  prefix.title = '密钥前缀用于辨认，完整密钥默认隐藏'
+  const identity = document.createElement('div'); identity.className = 'key-identity'
+  identity.appendChild(prefix)
+  const protection = document.createElement('span'); protection.className = 'key-protection'
+  protection.textContent = k.canReveal ? '加密保存 · 可查看' : '历史密钥 · 仅哈希'
+  protection.title = k.canReveal ? '仅管理员可按需查看' : '无法恢复原文，主动重置后支持再次查看；当前密钥仍然有效'
+  identity.appendChild(protection)
+  card.appendChild(identity)
 
   // 用量：请求数 + token
   const usage = document.createElement('div')
@@ -2571,12 +2626,21 @@ function buildKeyCard(k) {
     b.onclick = fn
     return b
   }
+  const reveal = mk('查看密钥', 'ghost key-view-button', () => viewStoredKey(k, reveal))
+  reveal.disabled = !k.canReveal
+  reveal.title = k.canReveal ? '获取并显示完整密钥，30 秒后自动隐藏' : '旧密钥只有哈希；如需开启查看，请在更多操作中主动重置密钥'
+  actions.appendChild(reveal)
   actions.appendChild(mk('编辑', 'ghost', () => openKeyEditor(k)))
-  actions.appendChild(mk('重置密钥', 'ghost', () => resetKey(k),
-    '生成新的密钥材料；旧密钥立即失效（用量会一并清零）'))
-  actions.appendChild(mk('重置用量', 'ghost', () => resetKeyUsage(k)))
   actions.appendChild(mk(k.enabled ? '停用' : '启用', 'ghost', () => toggleKey(k)))
-  actions.appendChild(mk('删除', 'danger', () => removeKey(k)))
+  const more = document.createElement('details'); more.className = 'key-more'
+  const summary = document.createElement('summary'); summary.textContent = '更多操作'
+  more.appendChild(summary)
+  const menu = document.createElement('div'); menu.className = 'key-more-menu'
+  menu.appendChild(mk('重置密钥', 'ghost', () => resetKey(k),
+    '生成新的密钥材料；旧密钥立即失效（用量会一并清零）'))
+  menu.appendChild(mk('重置用量', 'ghost', () => resetKeyUsage(k)))
+  menu.appendChild(mk('删除密钥', 'danger', () => removeKey(k)))
+  more.appendChild(menu); actions.appendChild(more)
   card.appendChild(actions)
 
   return card
@@ -2607,12 +2671,31 @@ function buildQuotaBar(label, used, max) {
   return wrap
 }
 
-/** 展示一次性明文（新建 / 重置后）。 */
+/** 按需查看已有密钥，不把完整密钥加入列表或浏览器缓存。 */
+async function viewStoredKey(k, button) {
+  hideRevealedKey()
+  const epoch = keyRevealEpoch
+  button.disabled = true; button.textContent = '读取中…'
+  try {
+    const r = await api('/admin/apikeys/reveal', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: k.id }),
+    })
+    if (epoch !== keyRevealEpoch) return
+    if (!r.ok) { alert('查看失败：' + (r.body?.error?.message || '请稍后重试')); return }
+    await revealKey(r.body.key, '查看「' + k.name + '」', '请仅粘贴到你信任的客户端中，切勿公开分享。')
+  } finally { button.disabled = false; button.textContent = '查看密钥' }
+}
+
+/** 明文仅短暂存在当前页面；离开页面或定时到期后清空。 */
 async function revealKey(plaintext, title, note) {
+  hideRevealedKey()
+  if ($('view-apikeys').hidden || apiKey() === '' || typeof plaintext !== 'string' || plaintext === '') return
   $('apikey-reveal-title').textContent = title
   $('apikey-reveal-value').textContent = plaintext
   $('apikey-reveal-note').textContent = note || ''
   $('apikey-reveal').hidden = false
+  $('apikey-copy').textContent = '复制'
+  keyRevealTimer = setTimeout(hideRevealedKey, 30000)
   try { $('apikey-reveal').scrollIntoView({ block: 'nearest' }) } catch { /* 忽略 */ }
 }
 
@@ -2662,7 +2745,7 @@ function openKeyEditor(existing) {
   const body = document.createElement('div')
   const hint = document.createElement('p'); hint.className = 'hint'
   hint.textContent = isNew
-    ? '填好限制后点「创建」，新密钥会显示一次（务必立刻复制）。'
+    ? '为应用设置独立密钥与访问限制。创建后可复制，也可随时在卡片中再次查看。'
     : '修改后立即生效。密钥本身不会变（要换密钥请用「重置密钥」）。'
   body.appendChild(hint)
 
@@ -2996,6 +3079,7 @@ function applyTheme(theme) {
 }
 
 $('logout').onclick = () => {
+  hideRevealedKey()
   localStorage.removeItem('wb_api_key')
   location.href = '/login'
 }
@@ -3016,9 +3100,14 @@ $('refresh-status').onclick = () => { loadTaskStatus(false); invalidateCredits()
 $('refresh-usage').onclick = loadUsage
 $('load-models').onclick = loadModels
 $('refresh-logs').onclick = loadLogs
-$('refresh-apikeys').onclick = () => { $('apikey-reveal').hidden = true; loadApiKeys() }
+$('refresh-apikeys').onclick = loadApiKeys
 $('create-apikey').onclick = createApiKey
 $('apikey-copy').onclick = copyReveal
+$('apikey-hide').onclick = hideRevealedKey
+$('apikey-search').oninput = renderApiKeys
+$('apikey-filter').onchange = renderApiKeys
+document.addEventListener('visibilitychange', () => { if (document.hidden) hideRevealedKey() })
+window.addEventListener('pagehide', hideRevealedKey)
 $('clear-logs').onclick = async () => {
   if (!confirm('清空日志？')) return
   await api('/admin/logs/clear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })

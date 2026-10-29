@@ -81,6 +81,8 @@ import { modelAllowed } from './store/apikeys.js'
 import {
   emptyApiKeyUsage,
   generateApiKey,
+  encryptApiKey,
+  revealApiKey,
   hashApiKey,
   isWindowExpired,
   keyPrefix,
@@ -2666,11 +2668,7 @@ async function handleInner(request: Request, env: Env, ctx: ExecutionContext): P
   // 这几个端点全部在下面的「先过 admin 鉴权」段落之后，故天然只认主密钥 ——
   // 子密钥连**列列表**都不行。否则一把泄漏的子密钥可以自己给自己扩容。
   //
-  // ## 明文只在两个地方出现
-  //
-  // ① 创建响应；② 重置响应。之后**永不回显**（库里只有哈希）。
-  // 这是刻意的：若列表能回显明文，那么任何一次面板 XSS / 屏幕截图
-  // 就等于密钥泄漏 —— 而用户本来只需保存一次。
+  // 明文仅在创建 / 重置与显式查看时返回；列表始终不返回密钥材料。
 
   if (path === '/admin/apikeys' && request.method === 'GET') {
     const pool = env.ACCOUNT_POOL.get(env.ACCOUNT_POOL.idFromName('cn'))
@@ -2693,22 +2691,42 @@ async function handleInner(request: Request, env: Env, ctx: ExecutionContext): P
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
     const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim().slice(0, 60) : '未命名'
     const pool = env.ACCOUNT_POOL.get(env.ACCOUNT_POOL.idFromName('cn'))
-    // ⚠️ 生成→哈希→存库；明文只在本次响应里返回。
+    // 同时保存鉴权哈希与加密材料；缺少加密配置时拒绝写入。
     const plaintext = generateApiKey()
+    let encryptedKey: string
+    try { encryptedKey = await encryptApiKey(env.CREDENTIAL_KEY, plaintext) } catch {
+      return jsonError(503, '无法加密 API Key，请检查 CREDENTIAL_KEY 配置', 'encryption_unavailable')
+    }
     const record = await pool.addApiKey({
       name,
       hash: await hashApiKey(plaintext),
       prefix: keyPrefix(plaintext),
+      encryptedKey,
     })
     // 创建时就可以带上限制（面板的「新建」表单支持一次填完）
     const limits = normalizeApiKeyLimits(body.limits)
     const saved = await pool.updateApiKey(record.id, { limits })
     if (saved === undefined) return jsonError(500, '创建后回读失败', 'internal_error')
     return json({
-      // ⚠️ **只在这里出现一次**（面板必须提示用户立即复制）
       key: plaintext,
       record: toApiKeyView(saved, emptyApiKeyUsage()),
     })
+  }
+
+  if (path === '/admin/apikeys/reveal' && request.method === 'POST') {
+    const body = (await request.json().catch(() => ({}))) as { id?: unknown }
+    const id = typeof body.id === 'string' ? body.id : ''
+    if (id === '') return jsonError(400, 'id 必填', 'invalid_request_error')
+    const pool = env.ACCOUNT_POOL.get(env.ACCOUNT_POOL.idFromName('cn'))
+    const record = (await pool.listApiKeys()).find((r) => r.id === id)
+    if (record === undefined) return jsonError(404, '找不到这把 API Key', 'not_found')
+    try {
+      const key = await revealApiKey(env.CREDENTIAL_KEY, record)
+      if (key === undefined) return jsonError(409, '历史密钥只保存了哈希，无法恢复；主动重置后可再次查看。旧密钥仍然有效。', 'key_not_recoverable')
+      return json({ key })
+    } catch {
+      return jsonError(503, '密钥解密失败，请检查 CREDENTIAL_KEY 是否与创建时一致', 'decryption_failed')
+    }
   }
 
   if (path === '/admin/apikeys/update' && request.method === 'POST') {
@@ -2734,9 +2752,14 @@ async function handleInner(request: Request, env: Env, ctx: ExecutionContext): P
     if (id === '') return jsonError(400, 'id 必填', 'invalid_request_error')
     const pool = env.ACCOUNT_POOL.get(env.ACCOUNT_POOL.idFromName('cn'))
     const plaintext = generateApiKey()
+    let encryptedKey: string
+    try { encryptedKey = await encryptApiKey(env.CREDENTIAL_KEY, plaintext) } catch {
+      return jsonError(503, '无法加密 API Key，请检查 CREDENTIAL_KEY 配置', 'encryption_unavailable')
+    }
     const updated = await pool.updateApiKey(id, {
       hash: await hashApiKey(plaintext),
       prefix: keyPrefix(plaintext),
+      encryptedKey,
     })
     if (updated === undefined) return jsonError(404, `找不到 id 为「${id}」的 API Key`, 'not_found')
     // ⚠️ 重置后同时**清空用量**：新密钥不该继承旧密钥的配额消耗

@@ -12,15 +12,16 @@
  *
  * ## 两个安全纪律
  *
- * 1. **明文永不落库** —— 只在「创建 / 重置」的响应里出现一次（用户自己保存）。
- *    库里存的是 SHA-256 哈希。这样即使 DO 存储被读出，也拿不到可用的 Key。
+ * 1. **明文永不落库** —— SHA-256 哈希用于鉴权，AES-GCM 密文供管理员按需查看。
+ *    列表不返回哈希或密文，查看接口仅允许主密钥调用。
  * 2. **哈希要恒定时间比较** —— 但因为我们用「哈希后查表」，查表本身不泄漏
  *    （键是哈希，且哈希是单向的），故这里不需要额外做恒定时间比较；
  *    真要防的是**时序侧信道**，而查表命中/不命中的差异已经由表结构抹平。
  *
- * ⚠️ 刻意**不**复用 `CREDENTIAL_KEY` 做加密（可逆）：子密钥需要的是
- * 「验签」而不是「取回明文」—— 可逆存储只会凭空扩大泄漏面。
+ * 历史记录只有哈希，不能恢复明文；主动重置后才补齐可查看的加密材料。
  */
+
+import { decryptCredential, encryptCredential, requireCredentialKey, CredentialCryptoError } from './crypto.js'
 
 /** 一把子密钥的配额与范围限制。 */
 export interface ApiKeyLimits {
@@ -62,6 +63,8 @@ export interface ApiKeyRecord {
   name: string
   /** SHA-256(明文) 的 base64url。**明文不落库。** */
   hash: string
+  /** AES-GCM 密文；历史密钥可能缺失，永不进入列表响应。 */
+  encryptedKey?: string
   /**
    * 展示用前缀（`sk-abc…`）。
    *
@@ -194,6 +197,7 @@ export function normalizeApiKeyRecord(raw: unknown): ApiKeyRecord | undefined {
     id: o.id,
     name: typeof o.name === 'string' && o.name !== '' ? o.name : '（未命名）',
     hash: o.hash,
+    ...(typeof o.encryptedKey === 'string' && o.encryptedKey !== '' ? { encryptedKey: o.encryptedKey } : {}),
     prefix: typeof o.prefix === 'string' ? o.prefix : '',
     createdAt: typeof o.createdAt === 'number' ? o.createdAt : 0,
     lastUsedAt: typeof o.lastUsedAt === 'number' ? o.lastUsedAt : 0,
@@ -403,6 +407,7 @@ export interface ApiKeyView {
   createdAt: number
   lastUsedAt: number
   enabled: boolean
+  canReveal: boolean
   limits: ApiKeyLimits
   usage: ApiKeyUsage
   /** 窗口起点的可读时间（面板直接显示，避免前端各算一份）。 */
@@ -418,8 +423,25 @@ export function toApiKeyView(record: ApiKeyRecord, usage: ApiKeyUsage): ApiKeyVi
     createdAt: record.createdAt,
     lastUsedAt: record.lastUsedAt,
     enabled: record.enabled,
+    canReveal: typeof record.encryptedKey === 'string' && record.encryptedKey !== '',
     limits: record.limits,
     usage,
     windowStartAt: usage.windowStart,
   }
+}
+
+/** 单独标注用途，避免将其它类型的凭据密文当作 API Key 回显。 */
+export async function encryptApiKey(secret: string | undefined, plaintext: string): Promise<string> {
+  return encryptCredential(requireCredentialKey(secret), { purpose: 'api-key', key: plaintext })
+}
+
+/** 只供管理员查看；旧哈希记录返回 undefined，损坏或错配材料明确报错。 */
+export async function revealApiKey(secret: string | undefined, record: ApiKeyRecord): Promise<string | undefined> {
+  if (!record.encryptedKey) return undefined
+  const payload = await decryptCredential<{ purpose?: unknown; key?: unknown }>(requireCredentialKey(secret), record.encryptedKey)
+  if (payload === null || payload.purpose !== 'api-key' || typeof payload.key !== 'string'
+      || await hashApiKey(payload.key) !== record.hash) {
+    throw new CredentialCryptoError('API Key 加密材料与记录不匹配')
+  }
+  return payload.key
 }

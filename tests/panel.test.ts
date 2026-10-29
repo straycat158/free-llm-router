@@ -1295,7 +1295,7 @@ function runPanelJs(fnSource, options = {}) {
     'document', 'localStorage', 'window', 'fetch', 'navigator', 'location', 'alert', 'confirm', 'URL', 'AbortController', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
     src + '\n;return { ' + fnSource + ' };',
   )
-  const rt = factory(document, localStorage, window, fetchStub, { userAgent: 'test' }, locationStub, () => {}, () => true, URL, AbortController, noTimer, noTimer, noTimer, noTimer)
+  const rt = factory(document, localStorage, window, fetchStub, options.navigator ?? { userAgent: 'test' }, locationStub, () => {}, () => true, URL, AbortController, options.setTimeout ?? noTimer, noTimer, noTimer)
   // 把桩暴露出来，便于断言「有没有跳转、密钥有没有被删」
   rt.__store = store
   rt.__location = locationStub
@@ -2177,4 +2177,69 @@ test('⚠️ 顶栏图标按钮缩小但触控区不得低于 34px', () => {
   assert.ok(w >= 34, `⚠️ 触控区不得低于 34px（实际 ${w}px，再小就点不中）`)
   const html = panelAsset('/panel/')?.body ?? ''
   assert.ok(!/width="16"/.test(html), '图标 SVG 也应缩小（16 → 14）')
+})
+
+function keyPreviewRecord(patch = {}) {
+  return { id: 'key-preview', name: '测试应用', prefix: 'sk-test', canReveal: true, enabled: true,
+    limits: { maxRequests: 100, maxTokens: 0, windowHours: 24, models: [], allowedIps: [], expiresAt: 0 },
+    usage: { requests: 3, inputTokens: 10, outputTokens: 20, lastAt: 0, rejected: 0, lastIp: '', lastModel: '', windowStart: 0 }, ...patch }
+}
+
+test('API Key 查看、隐藏、自动到期与复制操作使用真实页面函数', async () => {
+  let expiry
+  let copied = ''
+  const rt = runPanelJs('revealKey, hideRevealedKey, copyReveal, el: $', {
+    setTimeout: (callback, ms) => { if (ms === 30000) expiry = callback; return 1 },
+    navigator: { clipboard: { writeText: async (text) => { copied = text } } },
+  })
+  rt.el('view-apikeys').hidden = false
+  await rt.revealKey('sk-local-fixture', '测试', '仅本地')
+  assert.equal(rt.el('apikey-reveal').hidden, false)
+  assert.equal(rt.el('apikey-reveal-value').textContent, 'sk-local-fixture')
+  await rt.copyReveal()
+  assert.equal(copied, 'sk-local-fixture')
+  assert.ok(expiry, '必须注册自动隐藏定时器')
+  expiry()
+  assert.equal(rt.el('apikey-reveal').hidden, true)
+  assert.equal(rt.el('apikey-reveal-value').textContent, '')
+  assert.ok(![...rt.__store.values()].includes('sk-local-fixture'), '明文不进入 localStorage')
+})
+
+test('API Key 搜索、状态筛选、统计与旧密钥查看按钮', async () => {
+  const records = [keyPreviewRecord(), keyPreviewRecord({ id: 'disabled', name: '备用应用', enabled: false, canReveal: false })]
+  const rt = runPanelJs('loadApiKeys, renderApiKeys, buildKeyCard, el: $', {
+    fetch: async (path) => ({ ok: true, status: 200, text: async () => JSON.stringify(path === '/admin/apikeys' ? { keys: records } : {}) }),
+  })
+  await rt.loadApiKeys()
+  assert.equal(rt.el('apikeys').children.length, 2)
+  assert.equal(rt.el('apikey-stats').children.length, 3)
+  rt.el('apikey-search').value = '备用'
+  rt.renderApiKeys()
+  assert.equal(rt.el('apikeys').children[0].dataset.id, 'disabled')
+  rt.el('apikey-search').value = ''
+  rt.el('apikey-filter').value = 'active'
+  rt.renderApiKeys()
+  assert.equal(rt.el('apikeys').children.length, 1)
+  assert.equal(rt.el('apikeys').children[0].dataset.id, 'key-preview')
+  const card = rt.buildKeyCard(records[1])
+  const actions = card.children.find((el) => el.className === 'key-actions')
+  assert.equal(actions.children[0].disabled, true, '旧哈希密钥不能假装可查看')
+})
+
+test('API Key 查看请求在隐藏或离开页面后返回，不得重新显示明文', async () => {
+  let resolveReveal
+  const rt = runPanelJs('viewStoredKey, hideRevealedKey, el: $', {
+    fetch: async (path) => path === '/admin/apikeys/reveal'
+      ? new Promise((resolve) => { resolveReveal = resolve })
+      : { ok: true, status: 200, text: async () => '{}' },
+  })
+  rt.el('view-apikeys').hidden = false
+  const button = makeEl('button')
+  const pending = rt.viewStoredKey(keyPreviewRecord(), button)
+  rt.hideRevealedKey()
+  resolveReveal({ ok: true, status: 200, text: async () => JSON.stringify({ key: 'sk-do-not-show' }) })
+  await pending
+  assert.equal(rt.el('apikey-reveal-value').textContent, '')
+  assert.equal(rt.el('apikey-reveal').hidden, true)
+  assert.equal(button.disabled, false)
 })

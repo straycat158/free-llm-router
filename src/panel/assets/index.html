@@ -144,30 +144,38 @@
     否则用户会以为「这里显示的是我登录用的那个密钥」。
   -->
   <section class="view" id="view-apikeys" hidden>
-    <div class="page-head">
-      <h2>API Key</h2>
+    <div class="page-head key-page-head">
+      <div><h2>API Key</h2><p class="key-subtitle">管理应用访问密钥，让每次调用都在掌握之中。</p></div>
       <div class="page-tools">
         <button class="ghost" id="refresh-apikeys">刷新</button>
         <button id="create-apikey">新建 API Key</button>
       </div>
     </div>
 
-    <p class="hint">
+    <div class="key-stats" id="apikey-stats" aria-label="密钥概览"></div>
+    <p class="hint key-info">
       这里的密钥用于外部应用调用本服务的 <code>/v1/*</code> 接口，
       可以逐个限制用量、来源 IP 与可用模型。
       它<b>只能</b>调 <code>/v1/*</code>，不能登录面板、不能改账号。
     </p>
 
-    <!-- 新建 / 重置后的一次性明文展示（**只出现一次**） -->
+    <div class="key-toolbar">
+      <label class="key-search"><span>搜索密钥</span><input id="apikey-search" type="search" placeholder="按名称或密钥前缀搜索" autocomplete="off"></label>
+      <label class="key-filter"><span>状态</span><select id="apikey-filter"><option value="all">全部状态</option><option value="active">启用中</option><option value="disabled">已停用</option><option value="expired">已过期</option></select></label>
+      <span class="key-result-count" id="apikey-result-count" aria-live="polite"></span>
+    </div>
+
+    <!-- 按需查看；隐藏时清空 DOM 中的明文，不保存到浏览器持久存储。 -->
     <section class="panel" id="apikey-reveal" hidden>
       <div class="panel-head">
         <h3 id="apikey-reveal-title">密钥已生成</h3>
+        <button class="ghost" id="apikey-hide">隐藏密钥</button>
       </div>
       <p class="hint">
-        ⚠️ 请立刻复制保存 —— 关闭后<b>无法再次查看</b>（服务端只存哈希）。
+        仅向管理员展示，<b>30 秒后自动隐藏</b>。之后可在密钥卡片中再次查看。
       </p>
       <div class="key-reveal">
-        <code id="apikey-reveal-value"></code>
+        <code id="apikey-reveal-value" aria-label="完整 API Key"></code>
         <button class="ghost" id="apikey-copy">复制</button>
       </div>
       <p class="hint" id="apikey-reveal-note"></p>
