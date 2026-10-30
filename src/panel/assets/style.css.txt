@@ -1328,3 +1328,139 @@ html[data-theme='light'] button.prov-sw { background: #ffffff; }
   /* KPI 卡片在窄屏单列铺满，数字略小一点以免折行 */
   .kpi-value { font-size: 22px; }
 }
+
+/* WinUI 亚克力：保留布局和语义色，材质只作用于最外层，避免层层模糊。 */
+:root {
+  color-scheme: dark;
+  --bg: #171b25; --panel: #242832; --panel2: #2c313d; --line: #414653;
+  --text: #f2f4fa; --dim: #adb8ca; --accent: #315fbe; --accent-text: #91bfff;
+  --radius: 12px; --radius-sm: 6px;
+  --acrylic: rgba(35, 40, 53, .83); --chrome: rgba(28, 33, 46, .88);
+  --control: rgba(255,255,255,.065); --control-hover: rgba(255,255,255,.105);
+  --stroke: rgba(255,255,255,.11); --edge: rgba(255,255,255,.09);
+  --surface-shadow: 0 4px 20px rgba(0,0,0,.12), inset 0 1px var(--edge);
+  --ambient: radial-gradient(ellipse at 8% 0%, #244066 0, transparent 52%),
+    radial-gradient(ellipse at 95% 65%, #363052 0, transparent 55%);
+}
+html[data-theme='light'] {
+  color-scheme: light;
+  --bg: #edf1f8; --panel: #fafbfe; --panel2: #edf0f6; --line: #d4dae5;
+  --text: #202735; --dim: #596477; --accent: #245ab7; --accent-text: #245ab7;
+  --acrylic: rgba(255,255,255,.78); --chrome: rgba(246,249,255,.86);
+  --control: rgba(255,255,255,.72); --control-hover: rgba(230,236,247,.88);
+  --stroke: rgba(31,48,78,.15); --edge: rgba(255,255,255,.9);
+  --surface-shadow: 0 4px 20px rgba(32,53,85,.05), inset 0 1px var(--edge);
+  --ambient: radial-gradient(ellipse at 8% 0%, #c9ddfa 0, transparent 52%),
+    radial-gradient(ellipse at 95% 65%, #e0d9f5 0, transparent 55%);
+}
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    color-scheme: light;
+    --bg: #edf1f8; --panel: #fafbfe; --panel2: #edf0f6; --line: #d4dae5;
+    --text: #202735; --dim: #596477; --accent: #245ab7; --accent-text: #245ab7;
+    --acrylic: rgba(255,255,255,.78); --chrome: rgba(246,249,255,.86);
+    --control: rgba(255,255,255,.72); --control-hover: rgba(230,236,247,.88);
+    --stroke: rgba(31,48,78,.15); --edge: rgba(255,255,255,.9);
+    --surface-shadow: 0 4px 20px rgba(32,53,85,.05), inset 0 1px var(--edge);
+    --ambient: radial-gradient(ellipse at 8% 0%, #c9ddfa 0, transparent 52%),
+      radial-gradient(ellipse at 95% 65%, #e0d9f5 0, transparent 55%);
+  }
+}
+body {
+  min-height: 100vh; background: var(--ambient), var(--bg); background-attachment: fixed;
+  font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif;
+}
+header { padding: 16px 28px; background: var(--chrome); border-color: var(--stroke); }
+.brand h1 { font-size: 16px; font-weight: 600; letter-spacing: -.3px; }
+nav { padding: 8px 24px; gap: 6px; background: var(--chrome); border-color: var(--stroke); }
+main { padding-top: 28px; gap: 20px; }
+.page-head h2 { font-size: 23px; font-weight: 600; letter-spacing: -.5px; }
+.panel, .kpi, .prov-card, .task-card, .key-card, .count, .login-card {
+  background: var(--acrylic); border: 1px solid var(--stroke); box-shadow: var(--surface-shadow);
+}
+.modal-box, .key-more-menu { background: var(--acrylic); border-color: var(--stroke); box-shadow: 0 24px 70px rgba(0,0,0,.25), inset 0 1px var(--edge); }
+.modal { background: rgba(8,15,30,.38); }
+.modal-head { padding: 18px 20px; }
+.modal-body { padding: 20px; }
+.login-card { padding: 36px 30px; }
+.login-card h1 { font-size: 24px; font-weight: 600; letter-spacing: -.6px; }
+.prov-card { transition: border-color .16s ease, box-shadow .16s ease; }
+.prov-card:hover { border-color: var(--accent-text); box-shadow: 0 6px 24px rgba(0,0,0,.12); }
+/* 不让旧版浅色主题的高优先级实色覆盖新材质。 */
+html .kpi { background: var(--acrylic); }
+html body button {
+  min-height: 32px; padding: 6px 14px; border-radius: var(--radius-sm);
+  border: 1px solid rgba(0,0,0,.18); border-top-color: rgba(255,255,255,.18);
+  border-bottom-color: rgba(0,0,0,.3); box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  transition: background .14s ease, opacity .14s ease, transform .12s ease;
+}
+html body button:hover { filter: none; opacity: .92; }
+html body button:active:not(:disabled) { transform: scale(.98); opacity: .8; }
+html body button:disabled { opacity: .45; transform: none; }
+html body button.ghost, html body button.prov-sw:not(.is-off) { background: var(--control); border-color: var(--stroke); }
+html body button.ghost:hover, html body button.prov-sw:not(.is-off):hover { background: var(--control-hover); }
+html body button.nav-item, html body button.mtab {
+  position: relative; background: transparent; color: var(--dim); border-color: transparent; box-shadow: none;
+}
+html body button.nav-item { padding: 9px 14px; }
+html body button.nav-item:hover, html body button.mtab:hover { background: var(--control-hover); color: var(--text); }
+html body button.nav-item.active, html body button.mtab.active { background: var(--control); color: var(--text); }
+.nav-item.active::after, .mtab.active::after {
+  content: ''; position: absolute; bottom: 2px; left: 35%; right: 35%; height: 3px;
+  background: var(--accent-text); border-radius: 3px;
+}
+html body input, html body select, html body textarea {
+  background: var(--control); border-color: var(--stroke); border-bottom-color: var(--dim);
+  min-height: 34px; transition: border-color .14s ease, background .14s ease;
+}
+html body select option { color: var(--text); background: var(--panel); }
+html body input:focus, html body select:focus, html body textarea:focus { border-bottom: 2px solid var(--accent-text); outline: none; background: var(--panel); }
+button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; }
+html body .icon-btn { padding: 6px; min-width: 34px; }
+.seg { background: var(--control); border-color: var(--stroke); padding: 3px; }
+html body .seg-item { box-shadow: none; border-color: transparent; }
+html body .seg-item.active { background: var(--panel); color: var(--accent-text); border-color: var(--stroke); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.key-more > summary { background: var(--control); border-color: var(--stroke); }
+/* 仅外层使用 backdrop-filter，表格和弹窗内层保留清晰、低开销的实色。 */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  header, nav, .panel, .kpi, .prov-card, .task-card, .key-card, .count, .login-card, .modal-box, .key-more-menu {
+    -webkit-backdrop-filter: blur(22px) saturate(130%); backdrop-filter: blur(22px) saturate(130%);
+  }
+  .modal .panel, .modal .key-card, .modal .count { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--panel2); }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --acrylic: var(--panel); --chrome: var(--panel); }
+  header, nav, .panel, .kpi, .prov-card, .task-card, .key-card, .count, .login-card, .modal-box, .key-more-menu { background: var(--panel); }
+}
+/* WinUI 不定进度：细轨道与缓入缓出的进度环，保留按钮原有文案。 */
+.request-progress { position: fixed; inset: 0 0 auto; height: 3px; z-index: 100; overflow: hidden; background: var(--control); pointer-events: none; }
+.request-progress::after { content: ''; display: block; width: 35%; height: 100%; background: var(--accent-text); animation: fluent-progress 1.6s cubic-bezier(.4,0,.2,1) infinite; }
+button[aria-busy='true']::before, .loading-state::before {
+  content: ''; display: inline-block; flex: none; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px;
+  border: 2px solid currentColor; border-right-color: transparent; border-bottom-color: transparent; border-radius: 50%;
+  animation: fluent-ring 1.15s cubic-bezier(.4,0,.2,1) infinite;
+}
+.loading-state { display: flex; align-items: center; padding: 20px 0; color: var(--dim); }
+@keyframes fluent-progress { from { transform: translateX(-110%); } to { transform: translateX(400%); } }
+@keyframes fluent-ring { from { transform: rotate(-45deg); } to { transform: rotate(315deg); } }
+@media (max-width: 720px) {
+  header { padding: 12px 16px; }
+  nav { flex-wrap: nowrap; overflow-x: auto; padding: 6px 10px; }
+  html body .nav-item { flex: 0 0 auto; white-space: nowrap; }
+  main { padding-top: 20px; }
+  .page-head h2 { font-size: 21px; }
+  .modal-body { padding: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html body *, html body *::before, html body *::after { animation: none !important; transition: none !important; }
+  .request-progress::after { width: 100%; opacity: .6; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html body * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  header, nav, .panel, .kpi, .prov-card, .task-card, .key-card, .count, .login-card, .modal-box, .key-more-menu { background: var(--panel) !important; }
+}
+@media (forced-colors: active) {
+  html body * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important; }
+  html body button, .panel, .prov-card, .modal-box { border: 1px solid ButtonText; }
+  .nav-item.active::after, .mtab.active::after, .request-progress::after { background: Highlight; }
+}

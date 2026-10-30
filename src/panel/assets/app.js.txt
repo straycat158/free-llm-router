@@ -22,20 +22,39 @@ function apiKey() {
  * 统一的鉴权请求封装。
  * 401 时不抛错，而是返回 `{status:401}` 让调用方决定怎么提示。
  */
+let pendingRequests = 0
+const busyButtons = new WeakMap()
+
 async function api(path, options) {
   const opts = Object.assign({}, options)
   opts.headers = Object.assign({}, opts.headers, { authorization: 'Bearer ' + apiKey() })
-  let res
+  const progress = $('request-progress')
+  const active = document.activeElement
+  const button = active && active.tagName === 'BUTTON' && !active.classList.contains('nav-item') ? active : null
+  pendingRequests++
+  if (progress) progress.hidden = false
+  if (button) {
+    busyButtons.set(button, (busyButtons.get(button) || 0) + 1)
+    button.setAttribute('aria-busy', 'true')
+  }
   try {
-    res = await fetch(path, opts)
+    const res = await fetch(path, opts)
+    const text = await res.text()
+    let body
+    try { body = JSON.parse(text) } catch { body = text }
+    if (res.status === 401) { hideRevealedKey(); setAuth('密钥无效或未设置', false) }
+    return { status: res.status, ok: res.ok, body: body }
   } catch (e) {
     return { status: 0, ok: false, body: '网络错误：' + e.message }
+  } finally {
+    pendingRequests--
+    if (progress) progress.hidden = pendingRequests === 0
+    if (button) {
+      const count = busyButtons.get(button) - 1
+      busyButtons.set(button, count)
+      if (count === 0) button.setAttribute('aria-busy', 'false')
+    }
   }
-  const text = await res.text()
-  let body
-  try { body = JSON.parse(text) } catch { body = text }
-  if (res.status === 401) { hideRevealedKey(); setAuth('密钥无效或未设置', false) }
-  return { status: res.status, ok: res.ok, body: body }
 }
 
 /**
@@ -1316,7 +1335,7 @@ function priceBadge(factor) {
 async function loadModels() {
   const box = $('models')
   clear(box)
-  const p = document.createElement('p'); p.className = 'hint'; p.textContent = '加载中…'
+  const p = document.createElement('p'); p.className = 'hint loading-state'; p.setAttribute('role', 'status'); p.textContent = '加载中…'
   box.appendChild(p)
 
   const res = await api('/v1/models')
@@ -1965,7 +1984,7 @@ async function loadModalAccounts() {
 async function loadModalModels() {
   const box = $('modal-models')
   clear(box)
-  const p = document.createElement('p'); p.className = 'hint'; p.textContent = '加载中…'
+  const p = document.createElement('p'); p.className = 'hint loading-state'; p.setAttribute('role', 'status'); p.textContent = '加载中…'
   box.appendChild(p)
   const res = await api('/admin/providers/models?provider=' + encodeURIComponent(modalProviderId))
   clear(box)

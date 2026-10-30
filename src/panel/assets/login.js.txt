@@ -50,10 +50,12 @@ $('login-form').onsubmit = async (e) => {
 
   const btn = $('login-btn')
   btn.disabled = true
+  btn.setAttribute('aria-busy', 'true')
   setMsg('验证中…', true)
 
   const verdict = await verify(key)
   btn.disabled = false
+  btn.setAttribute('aria-busy', 'false')
 
   // ⚠️ 必须**分开**报告：把网络/服务端错误说成「密钥无效」会让用户
   // 去改一个完全正确的密钥（实测踩到过这一类误报）。

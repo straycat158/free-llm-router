@@ -1250,6 +1250,7 @@ function runPanelJs(fnSource, options = {}) {
   const src = panelAsset('/panel/app.js')?.body ?? ''
   const els = new Map()
   const document = {
+    activeElement: options.activeElement,
     getElementById: (id) => {
       if (!els.has(id)) els.set(id, makeEl('div'))
       return els.get(id)
@@ -2242,4 +2243,46 @@ test('API Key 查看请求在隐藏或离开页面后返回，不得重新显示
   assert.equal(rt.el('apikey-reveal-value').textContent, '')
   assert.equal(rt.el('apikey-reveal').hidden, true)
   assert.equal(button.disabled, false)
+})
+
+test('请求进度：并发请求全部完成后才隐藏轨道与按钮进度环', async () => {
+  const button = makeEl('button')
+  const pending = []
+  const rt = runPanelJs('api, el: $', {
+    activeElement: button,
+    fetch: async (path) => path.startsWith('/test-')
+      ? new Promise((resolve) => pending.push(resolve))
+      : ({ ok: true, status: 200, text: async () => '{}' }),
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  const first = rt.api('/test-first')
+  const second = rt.api('/test-second')
+  const firstIndex = pending.length - 2
+  assert.equal(rt.el('request-progress').hidden, false)
+  assert.equal(button.getAttribute('aria-busy'), 'true')
+  const response = () => ({ ok: true, status: 200, text: async () => '{}' })
+  pending[firstIndex](response())
+  await first
+  assert.equal(button.getAttribute('aria-busy'), 'true')
+  assert.equal(rt.el('request-progress').hidden, false)
+  pending[firstIndex + 1](response())
+  await second
+  // 启动时的自动请求也属于同一进度作用域。
+  for (let i = 0; i < firstIndex; i++) pending[i](response())
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(button.getAttribute('aria-busy'), 'false')
+  assert.equal(rt.el('request-progress').hidden, true)
+})
+
+test('请求进度：响应读取失败也会清理加载状态', async () => {
+  const button = makeEl('button')
+  const rt = runPanelJs('api, el: $', {
+    activeElement: button,
+    fetch: async () => ({ ok: true, status: 200, text: async () => { throw new Error('响应中断') } }),
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  const result = await rt.api('/test-failure')
+  assert.equal(result.ok, false)
+  assert.equal(button.getAttribute('aria-busy'), 'false')
+  assert.equal(rt.el('request-progress').hidden, true)
 })
